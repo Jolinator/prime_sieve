@@ -121,7 +121,9 @@ pub(super) fn mark_composites(
     for (&p, idx_slot) in small.iter().zip(state.next.iter_mut()) {
         let mut idx = *idx_slot;
         while idx < bits {
-            words[idx >> 6] &= !(1u64 << (idx & 63));
+            debug_assert!(idx >> 6 < words.len());
+            // SAFETY: idx < bits and words covers bits.div_ceil(64) words
+            unsafe { *words.get_unchecked_mut(idx >> 6) &= !(1u64 << (idx & 63)) };
             idx += p; // 2p integers apart is p bits apart
         }
         *idx_slot = idx - stride;
