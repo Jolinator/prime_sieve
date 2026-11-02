@@ -14,9 +14,9 @@ use crate::sieves::{
     optimized::eratosthenes_algo_optimized,
 };
 
-const COMPARE_LIMITS: [usize; 6] = [100, 1_000, 10_000, 1_000_000, 10_000_000, 100_000_000];
-const COMPARE_CACHE_USAGE_FACTORS: [f64; 6] = [0.25, 0.5, 1.0, 1.5, 2.0, 5.0];
-const COMPARE_MAX_PRIME_VECTOR_SIZES: [usize; 3] = [10_000, 100_000, 1_000_000];
+const COMPARE_LIMITS: [usize; 4] = [10_000, 1_000_000, 10_000_000, 100_000_000];
+const COMPARE_CACHE_USAGE_FACTORS: [f64; 7] = [0.25, 0.5, 1.0, 1.5, 2.0, 5.0, 10.0];
+const COMPARE_MAX_PRIME_VECTOR_SIZES: [usize; 2] = [1_000_000,10_000_000];
 const SCALING_LIMITS: [usize; 10] = [
     100,
     1_000,

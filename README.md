@@ -10,6 +10,8 @@ threads.
 - Rust and Cargo (the project uses Rust edition 2024).
 - A `.env` file containing `CPU_L1D_CACHE_SIZE_PER_INSTANCE_KB` and
   `CPU_LOGICAL_CORES`. The collection scripts below can generate this file.
+  If a value is missing or malformed, the program prints a warning and falls
+  back to a default (32 KiB L1 data cache, 12 logical cores).
 
 The program loads `.env` from the current working directory. Both values may be
 comma-separated when the machine reports different CPU types; the program uses
@@ -67,8 +69,8 @@ worker reuses its own bit buffer while marking segment composites with the base
 primes. An atomic counter distributes segments to workers, and results are
 sorted back into segment order before being returned.
 
-An initial repeating bit pattern pre-clears multiples of 3, 5, and 7. The
-remaining base primes mark their odd multiples in each segment. The default
+An initial repeating bit pattern pre-clears multiples of 3, 5, 7, 11, and 13.
+The remaining base primes mark their odd multiples in each segment. The default
 worker count is the reported logical core count, capped by the number of
 segments available for the run.
 
@@ -78,6 +80,12 @@ segments available for the run.
 Instead, it counts set bits in each completed segment with the machine's
 population-count operation. This avoids allocating and merging a vector of
 all the primes.
+
+Workers claim chunks of consecutive segments (`--chunk-segments`, 1024 by
+default) and carry per-prime state between them, so each prime's next multiple
+is found without a division. Base primes at least as large as a segment hit it
+at most once, so they are kept in buckets keyed by the segment they hit next and
+are only visited when they actually have a multiple there.
 
 ### Saving all primes
 
@@ -96,6 +104,8 @@ The command-line syntax is:
 
 ```text
 prime_sieve [compare | scaling | count <n> | findall <n>] [--cargo]
+            [--cache-usage-factor <f64>] [--max-prime-vector-size <n>]
+            [--chunk-segments <n>]
 ```
 
 `scaling` is the default when no mode is supplied. The `--cargo` option can be
@@ -143,6 +153,16 @@ Finds primes less than or equal to `n`, writes them to files, and prints both
 the report path and the directory containing the prime files. Use this mode
 when you need the prime values rather than only their count.
 
+### Tuning options
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--cache-usage-factor` | 0.5 | Fraction of the L1 data cache used per segment |
+| `--max-prime-vector-size` | 1000000 | Primes a worker holds before dumping to a file |
+| `--chunk-segments` | 1024 | Consecutive segments a count worker claims at once |
+
+Both `--option value` and `--option=value` are accepted.
+
 ### `--cargo`
 
 ```sh
@@ -154,6 +174,14 @@ executable. With `--cargo`, reports go to the repository's `results` directory
 instead. For `findall`, the prime-output directories are created under the
 selected results directory as well. Report and prime-directory names include
 a timestamp so separate runs do not overwrite one another.
+
+## Performance
+
+On an Intel Core i7-1255U (12 logical cores), `count 100000000000` (10^11,
+4,118,054,813 primes) takes about 10 seconds. The release profile uses fat LTO,
+a single codegen unit, and `target-cpu=native` (see `.cargo/config.toml`).
+Segments that exceed the L1 data cache slow the sieve down considerably, so keep
+`--cache-usage-factor` at or below about 1.
 
 ## Host-information scripts
 
