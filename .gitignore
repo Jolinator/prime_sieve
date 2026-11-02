@@ -1,5 +1,7 @@
 **.lock
 target/
 results/
+releases/
+**.zip
 .env
 
