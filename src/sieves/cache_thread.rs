@@ -41,21 +41,48 @@ fn sieve_with_primes(
     pattern: &[u64; EARLY_PERIOD],
     nums: &mut [u64],
 ) -> Vec<usize> {
-    mark_composites(start_odd, stop_odd, primes, pattern, nums, &mut Vec::new(), true);
+    let mut state = MarkState::default();
+    mark_composites(
+        start_odd, stop_odd, primes, pattern, nums, &mut state, true, false,
+    );
     get_primes_from_bits(start_odd, stop_odd, nums)
 }
 
-// `next[k]` is the bit index (in the segment about to be sieved) of the first odd multiple of
-// primes[6 + k] to clear. When `first` is false, it must come from the previous segment, which
-// has to be the directly preceding one and as long as the buffer.
+// Sieving state carried between consecutive segments.
+#[derive(Default)]
+pub(super) struct MarkState {
+    // next[k]: bit index of the next multiple of the k-th small prime
+    next: Vec<usize>,
+    // (prime, bit offset) of large primes, in a ring indexed by segments ahead of `head`
+    buckets: Vec<Vec<(u32, u32)>>,
+    head: usize,
+}
+
+fn first_bucketed(sieving: &[usize], stride: usize) -> usize {
+    sieving.partition_point(|&p| p < stride)
+}
+
+fn first_hit(start_odd: usize, p: usize) -> usize {
+    let mut counter = (start_odd / p) * p;
+    if counter % 2 == 0 {
+        counter += p;
+    } else if counter < start_odd {
+        counter += 2 * p;
+    }
+    (counter - start_odd) / 2
+}
+
+// `first` must be false only for the segment right after the one that produced `state`.
+// With `bucket_large`, primes of at least one segment length use buckets.
 pub(super) fn mark_composites(
     start_odd: usize,
     stop_odd: usize,
     primes: &[usize],
     pattern: &[u64; EARLY_PERIOD],
     nums: &mut [u64],
-    next: &mut Vec<usize>,
+    state: &mut MarkState,
     first: bool,
+    bucket_large: bool,
 ) {
     // 128 because each word is 64 bits and each bit is an odd number so 1 bit for every 2 integers
     let word_offset = (start_odd - 1) / 128;
@@ -64,28 +91,57 @@ pub(super) fn mark_composites(
     let sieving = &primes[6..];
     let stride = nums.len() * 64; // bits per full segment
     let bits = (stop_odd - start_odd).div_ceil(2);
+    let split = if bucket_large {
+        first_bucketed(sieving, stride)
+    } else {
+        sieving.len()
+    };
+    let (small, large) = sieving.split_at(split);
 
     if first {
-        next.clear();
-        next.extend(sieving.iter().map(|&p| {
-            let mut counter = (start_odd / p) * p;
-            if counter % 2 == 0 {
-                counter += p;
-            } else if counter < start_odd {
-                counter += 2 * p;
+        state.next.clear();
+        state
+            .next
+            .extend(small.iter().map(|&p| first_hit(start_odd, p)));
+
+        if let Some(&max_p) = large.last() {
+            let ring = max_p / stride + 2;
+            state.buckets.iter_mut().for_each(Vec::clear);
+            state.buckets.resize_with(ring, Vec::new);
+            state.head = 0;
+            for &p in large {
+                let idx = first_hit(start_odd, p);
+                let slot = (idx / stride) % ring;
+                state.buckets[slot].push((p as u32, (idx % stride) as u32));
             }
-            (counter - start_odd) / 2
-        }));
+        }
     }
 
     let words = &mut nums[..bits.div_ceil(64)];
-    for (&p, idx_slot) in sieving.iter().zip(next.iter_mut()) {
+    for (&p, idx_slot) in small.iter().zip(state.next.iter_mut()) {
         let mut idx = *idx_slot;
         while idx < bits {
             words[idx >> 6] &= !(1u64 << (idx & 63));
             idx += p; // 2p integers apart is p bits apart
         }
         *idx_slot = idx - stride;
+    }
+
+    if !large.is_empty() {
+        let ring = state.buckets.len();
+        let mut current = std::mem::take(&mut state.buckets[state.head]);
+        for &(p, off) in &current {
+            let off = off as usize;
+            if off < bits {
+                words[off >> 6] &= !(1u64 << (off & 63));
+            }
+            let n = off + p as usize;
+            let slot = (state.head + n / stride) % ring;
+            state.buckets[slot].push((p, (n % stride) as u32));
+        }
+        current.clear();
+        state.buckets[state.head] = current;
+        state.head = (state.head + 1) % ring;
     }
 }
 
@@ -286,7 +342,6 @@ pub fn segmented_sieve(
 }
 
 pub fn sieve_in_memory(limit: usize, config: &SieveConfig) -> Vec<usize> {
-    
     sieve_run(limit, config, None)
         .primes
         .expect("an in-memory run returns its primes")

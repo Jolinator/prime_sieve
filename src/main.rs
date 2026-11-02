@@ -47,7 +47,8 @@ fn flag_value<T: std::str::FromStr>(args: &[String], name: &str, default: T) -> 
         let raw = if arg == name {
             args.get(i + 1).map(String::as_str)
         } else {
-            arg.strip_prefix(name).and_then(|rest| rest.strip_prefix('='))
+            arg.strip_prefix(name)
+                .and_then(|rest| rest.strip_prefix('='))
         };
         if arg == name || raw.is_some() {
             return raw.and_then(|v| v.parse().ok()).unwrap_or_else(|| {

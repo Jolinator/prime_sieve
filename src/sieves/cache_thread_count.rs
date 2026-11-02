@@ -1,6 +1,6 @@
 use super::SieveConfig;
 use super::cache_thread::{
-    SieveJob, SievePlan, base_limit, build_early_pattern, mark_composites, run_workers,
+    MarkState, SieveJob, SievePlan, base_limit, build_early_pattern, mark_composites, run_workers,
     sieve_in_memory,
 };
 use super::optimized::eratosthenes_algo_optimized;
@@ -34,20 +34,29 @@ fn count_segment(
     i: usize,
     first: bool,
     nums: &mut [u64],
-    next: &mut Vec<usize>,
+    state: &mut MarkState,
 ) -> usize {
     let start = job.start_odds[i];
     let stop = job.stop_odds[i];
-    mark_composites(start, stop, job.primes, job.pattern, nums, next, first);
+    mark_composites(
+        start,
+        stop,
+        job.primes,
+        job.pattern,
+        nums,
+        state,
+        first,
+        true,
+    );
     let lo = job.first_odd.saturating_sub(start) / 2;
     let hi = (stop - start).div_ceil(2);
     count_bits(nums, lo, hi)
 }
 
-// Workers claim `chunk_segments` consecutive segments at once so `next` carries over between them.
+// Workers claim `chunk_segments` consecutive segments at a time.
 fn count_worker(job: SieveJob, next_chunk: &AtomicUsize, nums: &mut [u64]) -> usize {
     let total_segments = job.start_odds.len();
-    let mut next: Vec<usize> = Vec::new(); // refilled on the first segment of each chunk
+    let mut state = MarkState::default(); // reset on the first segment of each chunk
     let mut total = 0;
     loop {
         let begin = next_chunk.fetch_add(job.chunk_segments, Ordering::Relaxed);
@@ -55,7 +64,7 @@ fn count_worker(job: SieveJob, next_chunk: &AtomicUsize, nums: &mut [u64]) -> us
             break;
         }
         for i in begin..(begin + job.chunk_segments).min(total_segments) {
-            total += count_segment(job, i, i == begin, nums, &mut next);
+            total += count_segment(job, i, i == begin, nums, &mut state);
         }
     }
     total
