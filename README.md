@@ -3,7 +3,8 @@
 A Rust program for finding and counting primes with several implementations of
 the Sieve of Eratosthenes. It includes a simple baseline, a bit-packed
 odd-number sieve, and a cache-aware segmented sieve that can use multiple
-threads.
+threads. At very large numbers (over 10^10) it is around ~3x slower 
+than Kim Walisch's famous primesieve.
 
 ## Requirements and setup
 
