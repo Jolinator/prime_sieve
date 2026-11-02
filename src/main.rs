@@ -14,6 +14,9 @@ fn usage() -> ! {
         "Usage: prime_sieve [compare | scaling (default) | count <n> | findall <n>] [--cargo]"
     );
     eprintln!(
+        "  options: --cache-usage-factor <f64> (0.5)  --max-prime-vector-size <n> (1000000)  --chunk-segments <n> (1024)"
+    );
+    eprintln!(
         "  findall stores the primes; compare, scaling and count keep them in memory or only count them"
     );
     eprintln!(
@@ -23,17 +26,37 @@ fn usage() -> ! {
 }
 
 // Hybrid CPUs list one value per core type (e.g. "32,48"); use the smallest.
-fn env_min(name: &str) -> usize {
-    env::var(name)
-        .unwrap_or_else(|_| panic!("{name} must be set"))
-        .split(',')
-        .map(|part| {
-            part.trim()
-                .parse::<usize>()
-                .unwrap_or_else(|_| panic!("{name} must be a comma separated list of usize"))
-        })
-        .min()
-        .expect("split always yields at least one part")
+// Falls back to `default` with a warning when the variable is missing or malformed.
+fn env_min(name: &str, default: usize) -> usize {
+    let parsed = env::var(name).ok().and_then(|value| {
+        value
+            .split(',')
+            .map(|part| part.trim().parse::<usize>().ok())
+            .collect::<Option<Vec<_>>>()
+            .and_then(|parts| parts.into_iter().min())
+    });
+    parsed.unwrap_or_else(|| {
+        eprintln!("warning: could not read {name} from the environment, using default {default}");
+        default
+    })
+}
+
+// Reads `--name value` or `--name=value`; exits with usage on a bad value.
+fn flag_value<T: std::str::FromStr>(args: &[String], name: &str, default: T) -> T {
+    for (i, arg) in args.iter().enumerate() {
+        let raw = if arg == name {
+            args.get(i + 1).map(String::as_str)
+        } else {
+            arg.strip_prefix(name).and_then(|rest| rest.strip_prefix('='))
+        };
+        if arg == name || raw.is_some() {
+            return raw.and_then(|v| v.parse().ok()).unwrap_or_else(|| {
+                eprintln!("{name} needs a valid value");
+                usage()
+            });
+        }
+    }
+    default
 }
 
 fn save_and_print(report: &str, differentiator: &str, results_dir: &Path) {
@@ -42,7 +65,7 @@ fn save_and_print(report: &str, differentiator: &str, results_dir: &Path) {
 }
 
 fn main() {
-    //In my computer the fastest version of this algo found 4118054813 (up to 10^11) primes in 13.24 seconds
+    //In my computer the fastest version of this algo found 4118054813 (up to 10^11) primes in ~10 seconds
 
     let args: Vec<String> = env::args().skip(1).collect();
     let mode = match args.first() {
@@ -60,10 +83,11 @@ fn main() {
     dotenvy::dotenv().ok();
 
     let config = SieveConfig {
-        cache_bytes: env_min("CPU_L1D_CACHE_SIZE_PER_INSTANCE_KB") * 1024,
-        threads: env_min("CPU_LOGICAL_CORES"),
-        cache_usage_factor: 0.5,
-        max_prime_vector_size: 1000000,
+        cache_bytes: env_min("CPU_L1D_CACHE_SIZE_PER_INSTANCE_KB", 32) * 1024,
+        threads: env_min("CPU_LOGICAL_CORES", 12),
+        cache_usage_factor: flag_value(&args, "--cache-usage-factor", 0.5),
+        max_prime_vector_size: flag_value(&args, "--max-prime-vector-size", 1000000),
+        chunk_segments: flag_value(&args, "--chunk-segments", 1024),
     };
     let results_dir = create_results_dir(use_cargo_path);
 

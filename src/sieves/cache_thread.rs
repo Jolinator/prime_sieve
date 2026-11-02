@@ -1,5 +1,5 @@
 use super::SieveConfig;
-use super::optimized::{clear_bit, eratosthenes_algo_optimized, get_primes_from_bits};
+use super::optimized::{eratosthenes_algo_optimized, get_primes_from_bits};
 use super::prime_files::dump_primes;
 use std::cmp::min;
 use std::fs;
@@ -7,14 +7,14 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
-pub(super) const EARLY_PERIOD: usize = 105; // words: 3 * 5 * 7
+pub(super) const EARLY_PERIOD: usize = 15015; // words: 3 * 5 * 7 * 11 * 13
 
 //creates a mask that sieves primes 3 5 7 instantly
 pub(super) fn build_early_pattern() -> [u64; EARLY_PERIOD] {
     let mut pattern = [!0u64; EARLY_PERIOD];
     for k in 0..EARLY_PERIOD * 64 {
         let n = 2 * k + 1;
-        if n % 3 == 0 || n % 5 == 0 || n % 7 == 0 {
+        if n % 3 == 0 || n % 5 == 0 || n % 7 == 0 || n % 11 == 0 || n % 13 == 0 {
             pattern[k / 64] &= !(1u64 << (k % 64));
         }
     }
@@ -41,32 +41,51 @@ fn sieve_with_primes(
     pattern: &[u64; EARLY_PERIOD],
     nums: &mut [u64],
 ) -> Vec<usize> {
-    mark_composites(start_odd, stop_odd, primes, pattern, nums);
+    mark_composites(start_odd, stop_odd, primes, pattern, nums, &mut Vec::new(), true);
     get_primes_from_bits(start_odd, stop_odd, nums)
 }
 
+// `next[k]` is the bit index (in the segment about to be sieved) of the first odd multiple of
+// primes[6 + k] to clear. When `first` is false, it must come from the previous segment, which
+// has to be the directly preceding one and as long as the buffer.
 pub(super) fn mark_composites(
     start_odd: usize,
     stop_odd: usize,
     primes: &[usize],
     pattern: &[u64; EARLY_PERIOD],
     nums: &mut [u64],
+    next: &mut Vec<usize>,
+    first: bool,
 ) {
-    let mut counter: usize;
     // 128 because each word is 64 bits and each bit is an odd number so 1 bit for every 2 integers
     let word_offset = (start_odd - 1) / 128;
     init_with_early_pattern(nums, pattern, word_offset);
-    for &p in &primes[4..] {
-        counter = (start_odd / p) * p;
-        if counter % 2 == 0 {
-            counter += p;
-        } else if counter < start_odd {
-            counter += 2 * p;
+
+    let sieving = &primes[6..];
+    let stride = nums.len() * 64; // bits per full segment
+    let bits = (stop_odd - start_odd).div_ceil(2);
+
+    if first {
+        next.clear();
+        next.extend(sieving.iter().map(|&p| {
+            let mut counter = (start_odd / p) * p;
+            if counter % 2 == 0 {
+                counter += p;
+            } else if counter < start_odd {
+                counter += 2 * p;
+            }
+            (counter - start_odd) / 2
+        }));
+    }
+
+    let words = &mut nums[..bits.div_ceil(64)];
+    for (&p, idx_slot) in sieving.iter().zip(next.iter_mut()) {
+        let mut idx = *idx_slot;
+        while idx < bits {
+            words[idx >> 6] &= !(1u64 << (idx & 63));
+            idx += p; // 2p integers apart is p bits apart
         }
-        while counter < stop_odd {
-            clear_bit(nums, (counter - start_odd) / 2);
-            counter += p * 2;
-        }
+        *idx_slot = idx - stride;
     }
 }
 
@@ -80,6 +99,7 @@ pub(super) struct SieveJob<'a> {
     // When set, workers dump found primes to files in this directory instead of returning them.
     prime_dir: Option<&'a Path>,
     max_prime_vector_size: usize,
+    pub(super) chunk_segments: usize,
 }
 
 // Primes up to this bound are enough to sieve every number up to `limit`: its square root,
@@ -146,6 +166,7 @@ impl SievePlan {
             first_odd: self.first_odd,
             prime_dir,
             max_prime_vector_size: config.max_prime_vector_size,
+            chunk_segments: config.chunk_segments.max(1),
         }
     }
 }
@@ -265,6 +286,7 @@ pub fn segmented_sieve(
 }
 
 pub fn sieve_in_memory(limit: usize, config: &SieveConfig) -> Vec<usize> {
+    
     sieve_run(limit, config, None)
         .primes
         .expect("an in-memory run returns its primes")

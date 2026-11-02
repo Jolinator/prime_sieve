@@ -1,10 +1,10 @@
 use super::SieveConfig;
 use super::cache_thread::{
-    SieveJob, SievePlan, base_limit, build_early_pattern, claim_segments, mark_composites,
-    run_workers, sieve_in_memory,
+    SieveJob, SievePlan, base_limit, build_early_pattern, mark_composites, run_workers,
+    sieve_in_memory,
 };
 use super::optimized::eratosthenes_algo_optimized;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 //counts set bits in [lo, hi)
 fn count_bits(nums: &[u64], lo: usize, hi: usize) -> usize {
@@ -29,19 +29,36 @@ fn count_bits(nums: &[u64], lo: usize, hi: usize) -> usize {
     total
 }
 
-fn count_segment(job: SieveJob, i: usize, nums: &mut [u64]) -> usize {
+fn count_segment(
+    job: SieveJob,
+    i: usize,
+    first: bool,
+    nums: &mut [u64],
+    next: &mut Vec<usize>,
+) -> usize {
     let start = job.start_odds[i];
     let stop = job.stop_odds[i];
-    mark_composites(start, stop, job.primes, job.pattern, nums);
+    mark_composites(start, stop, job.primes, job.pattern, nums, next, first);
     let lo = job.first_odd.saturating_sub(start) / 2;
     let hi = (stop - start).div_ceil(2);
     count_bits(nums, lo, hi)
 }
 
-fn count_worker(job: SieveJob, next_segment: &AtomicUsize, nums: &mut [u64]) -> usize {
-    claim_segments(next_segment, job.start_odds.len())
-        .map(|i| count_segment(job, i, nums))
-        .sum()
+// Workers claim `chunk_segments` consecutive segments at once so `next` carries over between them.
+fn count_worker(job: SieveJob, next_chunk: &AtomicUsize, nums: &mut [u64]) -> usize {
+    let total_segments = job.start_odds.len();
+    let mut next: Vec<usize> = Vec::new(); // refilled on the first segment of each chunk
+    let mut total = 0;
+    loop {
+        let begin = next_chunk.fetch_add(job.chunk_segments, Ordering::Relaxed);
+        if begin >= total_segments {
+            break;
+        }
+        for i in begin..(begin + job.chunk_segments).min(total_segments) {
+            total += count_segment(job, i, i == begin, nums, &mut next);
+        }
+    }
+    total
 }
 
 //same as segmented_sieve without storing, but only returns how many primes are <= limit
