@@ -4,4 +4,5 @@ results/
 releases/
 **.zip
 .env
-
+build/linux/
+build/windows/

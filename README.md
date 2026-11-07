@@ -44,6 +44,40 @@ cargo build --release
 The executable is `target/release/prime_sieve` on Linux and
 `target\release\prime_sieve.exe` on Windows.
 
+### Build a runnable package
+
+Run the matching helper on the target operating system:
+
+```sh
+bash build/build_linux.sh
+cd build/linux
+bash collect_linux.sh
+./prime_sieve count 1000000
+```
+
+```powershell
+.\build\build_windows.ps1
+Set-Location build\windows
+.\collect_windows.ps1
+.\prime_sieve.exe count 1000000
+```
+
+Each helper builds a native release executable and copies it with its matching
+collector into `build/linux` or `build/windows`. Run the collector on the
+machine that will run the executable, and run the executable from that
+directory so it can find the generated `.env`. Rebuilding replaces the two
+packaged files but leaves `.env` and results intact.
+
+The project uses `target-cpu=native`, so a binary may require CPU features
+available on the build machine and may not run on older or different CPUs.
+Build on the intended machine or adjust that setting for your target machines.
+
+Shell scripts require LF line endings on Linux. `.gitattributes` tells Git to
+check out `*.sh` files with LF even when Windows uses CRLF. If an existing
+checkout already has CRLF, convert the affected scripts to LF in your editor
+and save them; in VS Code, click `CRLF` in the status bar and select `LF`.
+Git attributes do not automatically rewrite existing files when added.
+
 ## Algorithms
 
 ### Naive Eratosthenes sieve
