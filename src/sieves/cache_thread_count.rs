@@ -56,8 +56,8 @@ fn count_segment(
 // Workers claim `chunk_segments` consecutive segments at a time.
 fn count_worker(job: SieveJob, next_chunk: &AtomicUsize, nums: &mut [u64]) -> usize {
     let total_segments = job.start_odds.len();
-    let mut state = MarkState::default(); // reset on the first segment of each chunk
     let mut total = 0;
+    let mut state = MarkState::default(); // reset on the first segment of each chunk
     loop {
         let begin = next_chunk.fetch_add(job.chunk_segments, Ordering::Relaxed);
         if begin >= total_segments {
@@ -72,6 +72,9 @@ fn count_worker(job: SieveJob, next_chunk: &AtomicUsize, nums: &mut [u64]) -> us
 
 //same as segmented_sieve without storing, but only returns how many primes are <= limit
 pub fn segmented_sieve_count(limit: usize, config: &SieveConfig) -> usize {
+    if limit < 2 {
+        return 0;
+    }
     if limit < 10000 {
         return eratosthenes_algo_optimized(limit + 1).len();
     }

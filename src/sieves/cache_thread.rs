@@ -12,9 +12,8 @@ pub(super) const EARLY_PERIOD: usize = 15015; // words: 3 * 5 * 7 * 11 * 13
 //creates a mask that sieves primes 3 5 7 instantly
 pub(super) fn build_early_pattern() -> [u64; EARLY_PERIOD] {
     let mut pattern = [!0u64; EARLY_PERIOD];
-    for k in 0..EARLY_PERIOD * 64 {
-        let n = 2 * k + 1;
-        if n % 3 == 0 || n % 5 == 0 || n % 7 == 0 || n % 11 == 0 || n % 13 == 0 {
+    for p in [3, 5, 7, 11, 13] {
+        for k in ((p - 1) / 2..EARLY_PERIOD * 64).step_by(p) {
             pattern[k / 64] &= !(1u64 << (k % 64));
         }
     }
@@ -40,12 +39,14 @@ fn sieve_with_primes(
     primes: &[usize],
     pattern: &[u64; EARLY_PERIOD],
     nums: &mut [u64],
-) -> Vec<usize> {
-    let mut state = MarkState::default();
+    state: &mut MarkState,
+    first: bool,
+    found_primes: &mut Vec<usize>,
+) {
     mark_composites(
-        start_odd, stop_odd, primes, pattern, nums, &mut state, true, false,
+        start_odd, stop_odd, primes, pattern, nums, state, first, false,
     );
-    get_primes_from_bits(start_odd, stop_odd, nums)
+    get_primes_from_bits(start_odd, stop_odd, nums, found_primes);
 }
 
 // Sieving state carried between consecutive segments.
@@ -84,13 +85,17 @@ pub(super) fn mark_composites(
     first: bool,
     bucket_large: bool,
 ) {
-    // 128 because each word is 64 bits and each bit is an odd number so 1 bit for every 2 integers
+    // Each word represents 64 odd numbers (a span of 128 integers).
+    // Start with the aligned pattern that clears multiples of 3, 5, 7, 11 and 13.
     let word_offset = (start_odd - 1) / 128;
     init_with_early_pattern(nums, pattern, word_offset);
 
+    // Skip 2 and the five primes already handled by the pattern.
     let sieving = &primes[6..];
     let stride = nums.len() * 64; // bits per full segment
+    // The final segment may use fewer bits than the buffer holds.
     let bits = (stop_odd - start_odd).div_ceil(2);
+    // A prime >= stride hits at most once per full segment; optionally bucket it.
     let split = if bucket_large {
         first_bucketed(sieving, stride)
     } else {
@@ -99,12 +104,16 @@ pub(super) fn mark_composites(
     let (small, large) = sieving.split_at(split);
 
     if first {
+        // A new chunk can start anywhere, so recompute each prime's first hit.
+        // For following segments, the offsets saved below are reused instead.
         state.next.clear();
         state
             .next
             .extend(small.iter().map(|&p| first_hit(start_odd, p)));
 
         if let Some(&max_p) = large.last() {
+            // Schedule each large prime in the ring slot for its first hit.
+            // The ring is long enough to represent the distance to the next hit.
             let ring = max_p / stride + 2;
             state.buckets.iter_mut().for_each(Vec::clear);
             state.buckets.resize_with(ring, Vec::new);
@@ -118,31 +127,40 @@ pub(super) fn mark_composites(
     }
 
     let words = &mut nums[..bits.div_ceil(64)];
+    // Pair each small prime with its next hit, measured in bits from this segment.
     for (&p, idx_slot) in small.iter().zip(state.next.iter_mut()) {
         let mut idx = *idx_slot;
         while idx < bits {
             debug_assert!(idx >> 6 < words.len());
-            // SAFETY: idx < bits and words covers bits.div_ceil(64) words
+            // Clear the bit for this multiple. SAFETY: idx < bits and words
+            // covers bits.div_ceil(64) words.
             unsafe { *words.get_unchecked_mut(idx >> 6) &= !(1u64 << (idx & 63)) };
             idx += p; // 2p integers apart is p bits apart
         }
-        *idx_slot = idx - stride;
+        // Convert the next hit to an offset relative to the next full segment.
+        // For a short final segment, idx may be smaller than stride.
+        
+        *idx_slot = idx.saturating_sub(stride);
+        
     }
 
     if !large.is_empty() {
         let ring = state.buckets.len();
+        // Take the primes scheduled for this segment, leaving their slot empty.
         let mut current = std::mem::take(&mut state.buckets[state.head]);
         for &(p, off) in &current {
             let off = off as usize;
             if off < bits {
                 words[off >> 6] &= !(1u64 << (off & 63));
             }
+            // Schedule the next odd multiple, p bits after the current hit.
             let n = off + p as usize;
             let slot = (state.head + n / stride) % ring;
             state.buckets[slot].push((p, (n % stride) as u32));
         }
         current.clear();
         state.buckets[state.head] = current;
+        // Advance the ring to the next segment and retain the emptied allocation.
         state.head = (state.head + 1) % ring;
     }
 }
@@ -201,7 +219,7 @@ impl SievePlan {
             start_odds,
             stop_odds,
             words_per_buffer: bit_split / 64,
-            thread_count: min(config.threads, workloads),
+            thread_count: min(config.threads.max(1), workloads),
         }
     }
 
@@ -229,14 +247,6 @@ impl SievePlan {
     }
 }
 
-// Yields segment indexes until all are claimed; shared by every worker thread of a run.
-pub(super) fn claim_segments(next: &AtomicUsize, total: usize) -> impl Iterator<Item = usize> {
-    std::iter::from_fn(move || {
-        let i = next.fetch_add(1, Ordering::Relaxed);
-        (i < total).then_some(i)
-    })
-}
-
 // Runs `worker` on one thread per buffer and returns each thread's result.
 pub(super) fn run_workers<T: Send>(
     job: SieveJob,
@@ -246,6 +256,7 @@ pub(super) fn run_workers<T: Send>(
     let next_segment = AtomicUsize::new(0);
 
     thread::scope(|scope| {
+
         let handles: Vec<_> = buffers
             .iter_mut()
             .map(|nums| {
@@ -253,6 +264,7 @@ pub(super) fn run_workers<T: Send>(
                 scope.spawn(move || worker(job, next_segment, nums))
             })
             .collect();
+
         handles
             .into_iter()
             .map(|handle| handle.join().unwrap())
@@ -262,13 +274,12 @@ pub(super) fn run_workers<T: Send>(
 
 type SegmentResult = (usize, Vec<usize>);
 
-fn sieve_segment(job: SieveJob, i: usize, nums: &mut [u64]) -> Vec<usize> {
+fn sieve_segment(job: SieveJob, i: usize, nums: &mut [u64],  state: &mut MarkState, first: bool, found_primes: &mut Vec<usize>){
     let start = job.start_odds[i];
-    let mut found = sieve_with_primes(start, job.stop_odds[i], job.primes, job.pattern, nums);
+    sieve_with_primes(start, job.stop_odds[i], job.primes, job.pattern, nums, state, first, found_primes);
     if start < job.first_odd {
-        found.retain(|&n| n >= job.first_odd);
+        found_primes.retain(|&n| n >= job.first_odd);
     }
-    found
 }
 
 // Returns the primes found when not storing, and how many were dumped to files when storing.
@@ -276,21 +287,39 @@ fn sieve_worker(
     job: SieveJob,
     next_segment: &AtomicUsize,
     nums: &mut [u64],
+    
 ) -> (Vec<SegmentResult>, usize) {
     let mut results = Vec::new();
     let mut pending = Vec::new();
     let mut dumped = 0;
-    for i in claim_segments(next_segment, job.start_odds.len()) {
-        let found = sieve_segment(job, i, nums);
-        match job.prime_dir {
-            Some(dir) => {
-                pending.extend(found);
-                if pending.len() > job.max_prime_vector_size {
-                    dumped += dump_primes(&mut pending, dir);
+    let mut state = MarkState::default();
+
+    loop {
+        let begin = next_segment.fetch_add(job.chunk_segments, Ordering::Relaxed);
+        if begin >= job.start_odds.len() {
+            break;
+        }
+        let mut chunk_primes = Vec::new();
+
+        for i in begin..(begin + job.chunk_segments).min(job.start_odds.len()) {
+            let first = i == begin;
+            match job.prime_dir {
+                Some(dir) => {
+                    sieve_segment(job, i, nums, &mut state, first, &mut pending);
+                    if pending.len() > job.max_prime_vector_size {
+                        dumped += dump_primes(&mut pending, dir);
+                    }
+                }
+                None => {
+                    sieve_segment(job, i, nums, &mut state, first, &mut chunk_primes);
                 }
             }
-            None => results.push((i, found)),
         }
+
+        if job.prime_dir.is_none() {
+            results.push((begin, chunk_primes));
+        }
+
     }
     if let Some(dir) = job.prime_dir {
         dumped += dump_primes(&mut pending, dir);
@@ -350,6 +379,9 @@ pub fn sieve_in_memory(limit: usize, config: &SieveConfig) -> Vec<usize> {
 }
 
 fn sieve_run(limit: usize, config: &SieveConfig, run_dir: Option<&Path>) -> SieveOutput {
+    if limit <2 {
+        return store_or_return(Vec::new(), run_dir);
+    }
     if limit < 10000 {
         //sqroot of this number must have at least 4 primes (49). 62 is for safety.
         return store_or_return(eratosthenes_algo_optimized(limit + 1), run_dir);
@@ -361,7 +393,8 @@ fn sieve_run(limit: usize, config: &SieveConfig, run_dir: Option<&Path>) -> Siev
     let pattern = build_early_pattern();
     let job = plan.job(&base_primes, &pattern, run_dir, config);
 
-    let (segments, dumped): (Vec<_>, Vec<_>) = run_workers(job, &mut plan.buffers(), sieve_worker)
+    let (segments, dumped): (Vec<_>, Vec<_>) = 
+    run_workers(job, &mut plan.buffers(), sieve_worker)
         .into_iter()
         .unzip();
     let mut segments: Vec<SegmentResult> = segments.into_iter().flatten().collect();

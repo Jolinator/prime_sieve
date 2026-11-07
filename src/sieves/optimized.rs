@@ -8,8 +8,7 @@ pub(super) fn clear_bit(bits: &mut [u64], n: usize) {
     bits[n / 64] &= !mask;
 }
 
-pub(super) fn get_primes_from_bits(start_odd: usize, limit: usize, nums: &[u64]) -> Vec<usize> {
-    let mut primes = Vec::new();
+pub(super) fn get_primes_from_bits(start_odd: usize, limit: usize, nums: &[u64], found_primes: &mut Vec<usize>){
     let bit_limit = limit.saturating_sub(start_odd).div_ceil(2);
 
     for (i, &word) in nums.iter().enumerate().take(bit_limit.div_ceil(64)) {
@@ -21,11 +20,10 @@ pub(super) fn get_primes_from_bits(start_odd: usize, limit: usize, nums: &[u64])
         };
         while bits != 0 {
             let j = bits.trailing_zeros() as usize;
-            primes.push(start_odd + 2 * (i * 64 + j));
+            found_primes.push(start_odd + 2 * (i * 64 + j));
             bits &= bits - 1;
         }
     }
-    primes
 }
 
 pub fn eratosthenes_algo_optimized(limit: usize) -> Vec<usize> {
@@ -47,6 +45,6 @@ pub fn eratosthenes_algo_optimized(limit: usize) -> Vec<usize> {
         counter = invalidating * invalidating;
     }
     let mut primes = vec![2];
-    primes.extend(get_primes_from_bits(3, limit, &nums));
+    get_primes_from_bits(3, limit, &nums, &mut primes);
     primes
 }
