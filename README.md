@@ -49,24 +49,29 @@ The executable is `target/release/prime_sieve` on Linux and
 Run the matching helper on the target operating system:
 
 ```sh
-bash build/build_linux.sh
+bash build/build_linux.sh 1.2.3
 cd build/linux
 bash collect_linux.sh
 ./prime_sieve count 1000000
 ```
 
 ```powershell
-.\build\build_windows.ps1
+.\build\build_windows.ps1 1.2.3
 Set-Location build\windows
 .\collect_windows.ps1
 .\prime_sieve.exe count 1000000
 ```
 
 Each helper builds a native release executable and copies it with its matching
-collector into `build/linux` or `build/windows`. Run the collector on the
-machine that will run the executable, and run the executable from that
-directory so it can find the generated `.env`. Rebuilding replaces the two
-packaged files but leaves `.env` and results intact.
+collector into `build/linux` or `build/windows`. Each helper runs the collector
+and checks that counting up to 1,000,000 returns 78,498 primes. It fails if
+the program exits unsuccessfully or the count is wrong.
+
+The required version argument uses the format `X.Y.Z`; it determines the ZIP
+name, for example `build/V.1.2.3-linux.zip` or `build/V.1.2.3-windows.zip`.
+The helper deletes the package's `.env` and `results` directory before
+archiving, including old reports. Running the same version again replaces its
+ZIP. Linux packaging requires Python 3 for ZIP creation.
 
 The project uses `target-cpu=native`, so a binary may require CPU features
 available on the build machine and may not run on older or different CPUs.
